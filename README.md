@@ -31,9 +31,14 @@ Then point Claude Desktop at `python server.py` (see below).
 ## Configuration
 
 ```
-OPENALEX_API_KEY=optional_openalex_api_key
-OPENALEX_EMAIL=your_email_for_the_polite_pool
+OPENALEX_API_KEY=your_openalex_api_key
+OPENALEX_EMAIL=your_email        # legacy; see below
 ```
+
+OpenAlex retired the polite pool on 13 February 2026 and replaced it with an API
+key regime; the `mailto` parameter it depended on is now ignored. `OPENALEX_API_KEY`
+is the access route. `OPENALEX_EMAIL` is kept only as a fallback for anyone running
+against a mirror that still honours `mailto`, and sends nothing OpenAlex reads.
 
 ### Claude Desktop
 
@@ -44,8 +49,7 @@ OPENALEX_EMAIL=your_email_for_the_polite_pool
       "command": "C:\\path\\to\\.venv\\Scripts\\python.exe",
       "args": ["C:\\path\\to\\openalex_mcp\\server.py"],
       "env": {
-        "OPENALEX_API_KEY": "optional_openalex_api_key",
-        "OPENALEX_EMAIL": "your_email_for_the_polite_pool"
+        "OPENALEX_API_KEY": "your_openalex_api_key"
       }
     }
   }
