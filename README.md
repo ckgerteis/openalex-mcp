@@ -4,6 +4,14 @@ MCP stdio server for the OpenAlex API (global scholarly graph).
 
 Data via OpenAlex, OurResearch.
 
+## What this is for
+
+OpenAlex maps roughly 240 million works and the relations between them, and this is the instrument for questions about circulation rather than content.
+
+Ask who cites a given work and from which countries and institutions; assemble an author's full output across the name variants that defeat a title search; find which institutions cluster around a problem; identify the journals and repositories where a field actually publishes. Open-access status and PDF links come back with each record.
+
+For a historian, the useful move is tracing whether an argument travelled — out of its language, out of its discipline, out of the decade that produced it — which is a question a bibliographic catalogue cannot answer and a citation graph can.
+
 ## Install
 
 Flat layout, matching how the server is deployed: `server.py` and `ledger.py`
