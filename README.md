@@ -118,7 +118,7 @@ tool list.
 ## Query receipts
 
 Every query can be deposited to an append-only, hash-chained JSONL log by
-`openalex_mcp.ledger`. It is **off unless `MCP_RECEIPT_LOG` is set**, and a
+`openalex_mcp.ledger`. It is **off unless `MCP_RECEIPT_DIR` (or the legacy `MCP_RECEIPT_LOG`) is set**, and a
 logging failure is swallowed rather than raised — a search matters more than
 the record of it. Secrets are redacted before a line is composed.
 
