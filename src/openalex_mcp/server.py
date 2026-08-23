@@ -23,7 +23,7 @@ try:  # mcp SDK 1.x
 except ModuleNotFoundError:  # mcp SDK 2.x removed mcp.server.fastmcp
     from mcp.server.mcpserver import MCPServer as _MCPServer
 
-import ledger
+from . import ledger
 
 # ==============================================================================
 # Configuration
@@ -200,7 +200,7 @@ def _format_source(s: Dict) -> str:
 # Server
 # ==============================================================================
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 mcp = _MCPServer("openalex_mcp")
 
@@ -556,5 +556,10 @@ async def oa_author_works(params: AuthorWorksInput) -> str:
 # Entry point
 # ==============================================================================
 
-if __name__ == "__main__":
+def main() -> None:
+    """Console-script entry point (`openalex-mcp`)."""
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()
