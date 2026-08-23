@@ -202,7 +202,13 @@ def _format_source(s: Dict) -> str:
 
 __version__ = "1.1.0"
 
-mcp = _MCPServer("openalex_mcp")
+# mcp 1.x's FastMCP takes no `version`; 2.x's MCPServer does. Passed where it is
+# accepted, because a server that answers `initialize` with an empty version
+# string cannot be cited by the disclosure that has to name the build it ran.
+try:
+    mcp = _MCPServer("openalex_mcp", version=__version__)
+except TypeError:  # mcp SDK 1.x
+    mcp = _MCPServer("openalex_mcp")
 
 # ==============================================================================
 # Input Models
