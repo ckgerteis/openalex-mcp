@@ -1,6 +1,6 @@
 [project]
 name = "openalex-mcp"
-version = "1.1.0"
+version = "2.0.0"
 description = "MCP stdio server for the OpenAlex API (global scholarly graph)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -54,4 +54,6 @@ include = [
     "/CHANGELOG.md",
     "/install.ps1",
     "/.env.example",
+    "/response-schema.json",
+    "/tests",
 ]
