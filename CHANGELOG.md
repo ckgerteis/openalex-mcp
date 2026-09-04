@@ -7,6 +7,45 @@ the text and, where a version DOI exists, cited by it.
 Releases earlier than those below are on the repository's releases page; this
 file begins where the record is precise enough to be worth writing down.
 
+## 2.0.0 — 2026-09-04
+
+**Breaking: every tool now returns the family's JSON response envelope.** 1.x
+returned formatted markdown. Any consumer that parsed that text must be
+rewritten; the input models and tool names are unchanged.
+
+- **`mediation.py` and `response-schema.json` vendored**, byte-identical to the
+  copies in cinii-mcp, jstage-mcp, ndl-mcp and korea-scholarship-mcp. The
+  README's claim that the family shares one envelope is now true of this
+  server. Every response carries `searched_for` on term searches, a typed
+  `query`, `matching_mode`, graduated `result.breadth`, per-item `matched_in`,
+  typed diagnostics, a receipt and the attribution line.
+- **Receipts go through `emit()`.** The per-request `ledger.record_request`
+  call is gone; the envelope itself is deposited, so the log and the answer
+  cannot drift apart, and the envelope reports `RECEIPT_NOT_DEPOSITED` or
+  `RECEIPT_WRITE_FAILED` when a deposit did not happen.
+- **Matching modes named for what OpenAlex does.** `full_text_stemmed` for
+  `search=` (title, abstract, indexed full text, stemmed), `filter_exact` for
+  identifier filters, `identifier_lookup` for single fetches.
+- **Titles typed by OpenAlex's `language` field**, not by guess. `ja` and `ko`
+  land in their slots; Latin-script titles in `en`; a `zh` title or a han-only
+  title with no language stays untyped in `extra.title`.
+- **Typed diagnostics** replace `"Error: …"` strings: `ZERO_RESULTS`,
+  `NOT_FOUND`, `RATE_LIMITED`, `API_ERROR`, `TRANSPORT_ERROR`. A 200 whose
+  body is not JSON is `API_ERROR` rather than an uncaught exception.
+- **The credential never touches the caller's parameters.** `_oa_request`
+  adds the key to a copy; the dict that reaches the envelope and the receipt
+  is the one the caller built. Error text is redacted before it becomes a
+  diagnostic. httpx request logging is silenced, since the key travels in the
+  query string and httpx logs the full URL at INFO.
+- **Hard-coded "current affiliation" heuristic removed.** 1.x called an
+  affiliation current if its years reached 2023. Affiliations are now passed
+  through with their year lists and no judgement.
+- **Tests.** `tests/test_server.py` runs against recorded OpenAlex responses
+  and validates every envelope against the schema. No network, no key.
+- Known limit: the receipt's `result_ids` reads DOIs only, so a work without
+  one is fixed by the receipt hash and `extra.openalex_id` but not listed.
+  Extending `make_receipt` is a family-wide schema change and is deferred.
+
 ## 1.1.0 — 2026-08-23
 
 **Not released.** No tag was cut and no Zenodo record exists for this version, so

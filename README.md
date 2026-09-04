@@ -73,16 +73,47 @@ installed, so two envelope versions cannot end up in one environment unnoticed.
 
 ## Tools
 
-| Tool |
-| --- |
-| `oa_author_works` |
-| `oa_cited_by` |
-| `oa_get_author` |
-| `oa_get_work` |
-| `oa_search_authors` |
-| `oa_search_institutions` |
-| `oa_search_sources` |
-| `oa_search_works` |
+| Tool | Purpose |
+| --- | --- |
+| `oa_search_works` | Works (articles, books, datasets, theses) by term, with year, author, institution, source and open-access filters |
+| `oa_get_work` | One work by OpenAlex ID, DOI or PMID |
+| `oa_search_authors` | Authors by name, optionally within an institution |
+| `oa_get_author` | One author by OpenAlex ID or ORCID |
+| `oa_search_sources` | Journals, repositories and conferences by name |
+| `oa_search_institutions` | Institutions by name, optionally by country |
+| `oa_cited_by` | Works citing a given work, most-cited first |
+| `oa_author_works` | An author's works, with year filter and sort |
+
+All eight return one typed JSON response envelope — see [Response format](#response-format). (Releases before 2.0.0 returned formatted markdown text; that is a breaking change, not a formatting preference.)
+
+## Response format
+
+Every tool returns one JSON response envelope, built by `mediation.py` and defined in [`response-schema.json`](response-schema.json). Schema version 2.3.0. The same module and schema are vendored byte-identically across the server family, so an envelope from one server can be read by a consumer written for another.
+
+The envelope reports how the search was made, not only what it found:
+
+- **`searched_for`** — on search operations, the term actually sent, its detected script, and the matching mode, hoisted to the top of the envelope so a relaying client cannot drop it. Lookups (`oa_get_work`, `oa_get_author`) and identifier filters (`oa_cited_by`, `oa_author_works`) omit it: they were handed an identifier and chose no term.
+- **`query`** — `input_terms` as supplied, `normalized` as sent, and the detected `script`. The credential never enters `params`.
+- **`matching_mode`** — `full_text_stemmed` for term searches: OpenAlex matches title, abstract and indexed full text with stemming, so `result.total` is a loose count and a high breadth is expected. `filter_exact` for identifier filters; `identifier_lookup` for single-record fetches.
+- **`result.breadth`** — `none`, `narrow` (1–50), `broad` (51–1000), `very_broad` (>1000).
+- **`items[]`** — the family's item shape. OpenAlex's own `language` field decides which typed title slot a work's title lands in (`ja`, `ko`; Latin-script titles in any other language go to `en`). A CJK title OpenAlex marks neither `ja` nor `ko`, or a han-only title with no language, is left untyped rather than guessed; `extra.title` always carries the text and `extra.language` the code. OpenAlex identifiers, citation counts, open-access flags, topics and the reconstructed abstract sit in `extra`; the DOI (bare, without the `https://doi.org/` prefix) in `ids.doi`; the landing page in `ids.url_en`; an open-access copy in `ids.fulltext_url`. Author, source and institution records use `record_type` `author`, `source` and `institution` with their metrics in `extra`.
+- **`receipt`** — an ISO 8601 timestamp, a SHA-256 over the normalised query and its parameters, and the DOIs returned. Works without a DOI are identified only in `extra.openalex_id`, which the receipt's `result_ids` does not yet read.
+- **`attribution`** — the required credit line, in every response.
+
+### Diagnostic codes
+
+Typed and closed. A diagnostic is never prose the client has to parse.
+
+| Code | Level | Meaning |
+| --- | --- | --- |
+| `OK` | info | Records returned; nothing to flag. |
+| `ZERO_RESULTS` | warning | No records for this term and filter set. Non-English titles are indexed as the publisher supplied them, so an English rendering of a Japanese or Korean title may not match. |
+| `NOT_FOUND` | warning | A lookup by identifier answered 404. |
+| `RATE_LIMITED` | error | OpenAlex answered 429. Since 2026 OpenAlex meters keyless access by a per-IP daily budget as well as per-second rate; a key raises both. |
+| `API_ERROR` | error | The API answered, and answered with an error (or with a 200 that was not JSON). |
+| `TRANSPORT_ERROR` | error | The request did not complete. Kept distinct from `API_ERROR` because a failed search has an unknown result and must never be written up as an absence. |
+| `RECEIPT_NOT_DEPOSITED` | info | The response was not written to the query ledger, because no receipts destination is configured. |
+| `RECEIPT_WRITE_FAILED` | warning | A receipts destination is set, the write was attempted, and it did not land. |
 
 ## Configuration
 
@@ -115,6 +146,8 @@ into. On macOS or Linux use the absolute path to `.venv/bin/openalex-mcp`.
 }
 ```
 
+**Changed in 2.0.0.** Tools return the JSON envelope rather than markdown; any consumer that parsed the 1.x text must be rewritten.
+
 **Changed in 1.1.0.** Earlier versions were registered by path —
 `"command": "…\\python.exe", "args": ["…\\server.py"]`. That entry will not
 start this version, because `server.py` is now a module inside a package rather
@@ -125,8 +158,8 @@ tool list.
 
 ## Query receipts
 
-Every query can be deposited to an append-only, hash-chained JSONL log by
-`openalex_mcp.ledger`. It is **off unless `MCP_RECEIPT_DIR` (or the legacy `MCP_RECEIPT_LOG`) is set**, and a
+Every envelope can be deposited to an append-only, hash-chained JSONL log by
+`openalex_mcp.ledger`. Since 2.0.0 the envelope says whether that happened: `RECEIPT_NOT_DEPOSITED` when no destination is set, `RECEIPT_WRITE_FAILED` when one is set and the write did not land. It is **off unless `MCP_RECEIPT_DIR` (or the legacy `MCP_RECEIPT_LOG`) is set**, and a
 logging failure is swallowed rather than raised — a search matters more than
 the record of it. Secrets are redacted before a line is composed.
 
@@ -164,6 +197,15 @@ alike would invite a reader to mistake one for the other. The manifest is the
 object to cite: one description of the whole deposit — per-file line counts,
 first and last timestamps, terminal hashes, and combined totals by server,
 script and session.
+
+## Tests
+
+```bash
+.venv/bin/pip install pytest jsonschema
+.venv/bin/python -m pytest -q tests
+```
+
+The suite runs against recorded OpenAlex responses under `tests/fixtures/` (captured 2026-09-04) and validates every envelope against `response-schema.json`; it needs no network and no key. `RUN_LIVE=1` adds one request to the live API.
 
 ## MCP SDK compatibility
 
