@@ -1,6 +1,6 @@
 [project]
 name = "openalex-mcp"
-version = "2.0.0"
+version = "2.0.1"
 description = "MCP stdio server for the OpenAlex API (global scholarly graph)."
 readme = "README.md"
 requires-python = ">=3.10"

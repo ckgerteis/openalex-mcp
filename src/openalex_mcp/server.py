@@ -1,5 +1,5 @@
 """
-OpenAlex MCP Server (v2.0.0)
+OpenAlex MCP Server (v2.0.1)
 ============================
 An MCP server for the OpenAlex API — the open scholarly graph maintained by
 OurResearch, covering works, authors, sources (journals), and institutions.
@@ -32,7 +32,7 @@ except ModuleNotFoundError:  # mcp SDK 2.x removed mcp.server.fastmcp
 
 from . import mediation as M
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 
 # ==============================================================================
 # Configuration
