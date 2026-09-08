@@ -100,6 +100,9 @@ same change as ndl-mcp 1.2.0, where it was proved before being copied here.
 - The README's licence section links OpenAlex's CC0 statement and says what
   OurResearch asks for (a credit and a link, which the `attribution` line in
   every envelope carries).
+- `tests/test_server.py` drives coroutines with `asyncio.run`: since Python
+  3.14 `get_event_loop()` no longer creates a loop in the main thread, and
+  the suite failed on 3.14 for that reason alone. The server was unaffected.
 - Workflow actions moved to their current majors; setup-uv is pinned exactly
   (v10.0.1) because it publishes no moving major tag past v7.
 
