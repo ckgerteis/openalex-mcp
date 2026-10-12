@@ -331,6 +331,23 @@ def _item_from_institution(i: dict, matched_in: str) -> dict:
 # ==============================================================================
 
 
+def _not_shape(expected: str, data: Any) -> dict:
+    said = ""
+    if isinstance(data, dict):
+        msg = data.get("error") or data.get("message")
+        if msg:
+            said = f' It said: "{_redact(str(msg))[:200]}".'
+        shape = f"an object with keys {sorted(map(str, data))[:6]}"
+    else:
+        shape = "null" if data is None else f"a {type(data).__name__}"
+    return M.diag(
+        "error", "API_ERROR",
+        f"OpenAlex answered 200, but with {shape} rather than {expected}.{said}",
+        "The result of this search is unknown, not empty. Retry before "
+        "concluding anything about the literature.",
+    )
+
+
 def _envelope(
     *,
     operation: str,
@@ -354,14 +371,23 @@ def _envelope(
     total = 0
     start = 1
     ds: list[dict] = []
+    # A 200 body that is not the shape asked for (null, an error object, a
+    # page without results) is an answer that did not arrive. Reported as
+    # ZERO_RESULTS, or as an empty record marked OK, it read as an absence in
+    # the literature.
     if err:
         ds.append(err)
     elif single:
-        if isinstance(data, dict):
+        if isinstance(data, dict) and isinstance(data.get("id"), str):
             items = [build(data, matched_in)]
             total = 1
-    elif isinstance(data, dict):
-        results = data.get("results") or []
+        else:
+            ds.append(_not_shape("a record", data))
+    elif not (isinstance(data, dict) and isinstance(data.get("results"), list)
+              and isinstance(data.get("meta"), dict)):
+        ds.append(_not_shape("a results page", data))
+    else:
+        results = data["results"]
         items = [build(r, matched_in) for r in results if isinstance(r, dict)]
         meta = data.get("meta") or {}
         try:
@@ -372,7 +398,7 @@ def _envelope(
         page = int(meta.get("page") or params.get("page") or 1)
         start = (page - 1) * per_page + 1
 
-    if not err and not items:
+    if not ds and not items:
         ds.append(M.diag(
             "warning", "ZERO_RESULTS",
             "No records. OpenAlex matched nothing for this term and filter set.",
