@@ -7,6 +7,42 @@ the text and, where a version DOI exists, cited by it.
 Releases earlier than those below are on the repository's releases page; this
 file begins where the record is precise enough to be worth writing down.
 
+## 2.2.0 — 2026-10-12
+
+**Maintenance release from the stress test of 12 October 2026.** No tool was
+added or removed and no parameter changed meaning. Results that were wrong
+before are right now, or are reported as errors instead of as absences.
+
+- **A 200 that is not the protocol is an error, not zero results.** An HTML
+  maintenance page, a bare error object or an empty body served with status
+  200 used to parse as a valid empty answer and came back as a zero-results
+  diagnostic, which reads as an absence in the literature. It is now reported
+  as an error.
+- **Lone surrogates are replaced before anything reaches the wire.** A lone
+  UTF-16 surrogate in an argument or an upstream record made the receipt or
+  the JSON-RPC reply unencodable; over stdio the client could wait forever.
+- **The ledger refuses to append after an unreadable last line.** A torn
+  final line (a crash mid-write) was silently skipped and the hash chain
+  continued from the line before it, so the break was hidden.
+- **Python.** CI now tests 3.11 as well; `requires-python` is capped below
+  3.15 until 3.15 has been tested.
+- **Packaging.** `set_version.py` and `tests/test_release_metadata.py` are
+  checked against the family's hashes in `VENDORED.sha256`.
+- **New diagnostic `RECORD_UNREADABLE` (warning).** One record with a field of
+  the wrong type raised out of the item builder and lost the whole page. Such
+  a record is now skipped and named by position and identifier; the rest of
+  the page is returned, and a page of only unreadable records is not reported
+  as `ZERO_RESULTS`.
+- **Identifiers cannot rewrite the request.** A comma or control character in
+  a filter value added a filter, and `oa_get_work("../authors/A5")` fetched an
+  author. Filter values and path identifiers are now validated and encoded.
+- **The API key and e-mail are redacted** from diagnostics in raw and
+  percent-encoded forms, before the 300-character cut. An unformable URL is
+  reported as `TRANSPORT_ERROR` instead of escaping the tool.
+- **Counts.** `meta.count`, `per_page` and `page` that are infinite, negative,
+  fractional or non-numeric no longer crash the tool or stand as the corpus
+  size.
+
 ## 2.1.2 — 2026-09-12
 
 **The bundle's environment is built when it is installed, not during the first
