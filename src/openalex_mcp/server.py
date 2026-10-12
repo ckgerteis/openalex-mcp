@@ -435,12 +435,11 @@ def _envelope(
         if bad:
             ds.append(bad)
         meta = data.get("meta") or {}
-        try:
-            total = int(meta.get("count", len(items)))
-        except (TypeError, ValueError):
+        total = _count(meta.get("count"))
+        if total is None:
             total = len(items)
-        per_page = int(meta.get("per_page") or params.get("per-page") or len(items) or 1)
-        page = int(meta.get("page") or params.get("page") or 1)
+        per_page = _count(meta.get("per_page")) or _count(params.get("per-page")) or len(items) or 1
+        page = _count(meta.get("page")) or _count(params.get("page")) or 1
         start = (page - 1) * per_page + 1
 
     if not ds and not items:
@@ -507,6 +506,22 @@ def _path_id(v: str) -> str:
                          "segments and no control characters")
     return v
 
+
+
+def _count(v: Any) -> Optional[int]:
+    """A count from the API: a non-negative integer, or None. JSON numbers such
+    as 1e309 parse as infinity, and int() of that raises OverflowError;
+    is_integer() is False for infinity and NaN. A negative or fractional count
+    is not a count either."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v if v >= 0 else None
+    if isinstance(v, float):
+        return int(v) if v.is_integer() and v >= 0 else None
+    if isinstance(v, str) and v.strip().isdecimal():
+        return int(v.strip())
+    return None
 
 
 class WorkSearchInput(BaseModel):
