@@ -358,6 +358,37 @@ def _not_shape(expected: str, data: Any) -> dict:
     )
 
 
+# A record whose fields have the wrong types (a string where an object
+# belongs, a number for a title) raised out of the builder and took the whole
+# page with it: the caller got an exception, no envelope and no receipt.
+_UNREADABLE = (AttributeError, TypeError, ValueError, KeyError, IndexError, OverflowError)
+
+
+def _build_all(records: list, build, id_key: str) -> tuple[list[dict], Optional[dict]]:
+    """Build every record that can be read; skip and name the rest.
+
+    Returns (items, diagnostic-or-None). The diagnostic is RECORD_UNREADABLE,
+    naming each skipped record by its position on the page and, where it has
+    one, its identifier."""
+    items: list[dict] = []
+    bad: list[str] = []
+    for pos, rec in enumerate(records, 1):
+        try:
+            items.append(build(rec))  # a non-object record fails here too
+        except _UNREADABLE:
+            rid = rec.get(id_key) if isinstance(rec, dict) else None
+            bad.append(f"#{pos}" + (f" ({rid[:100]})" if isinstance(rid, str) and rid else ""))
+    if not bad:
+        return items, None
+    named = "; ".join(bad[:10]) + ("; and more" if len(bad) > 10 else "")
+    return items, M.diag(
+        "warning", "RECORD_UNREADABLE",
+        f"{len(bad)} of {len(records)} record(s) could not be read and were left out: {named}.",
+        "The upstream record is malformed, not absent. The other records are complete; "
+        "look the omitted ones up by identifier or retry later.",
+    )
+
+
 def _envelope(
     *,
     operation: str,
@@ -389,8 +420,10 @@ def _envelope(
         ds.append(err)
     elif single:
         if isinstance(data, dict) and isinstance(data.get("id"), str):
-            items = [build(data, matched_in)]
-            total = 1
+            items, bad = _build_all([data], lambda r: build(r, matched_in), "id")
+            if bad:
+                ds.append(bad)
+            total = len(items)
         else:
             ds.append(_not_shape("a record", data))
     elif not (isinstance(data, dict) and isinstance(data.get("results"), list)
@@ -398,7 +431,9 @@ def _envelope(
         ds.append(_not_shape("a results page", data))
     else:
         results = data["results"]
-        items = [build(r, matched_in) for r in results if isinstance(r, dict)]
+        items, bad = _build_all(results, lambda r: build(r, matched_in), "id")
+        if bad:
+            ds.append(bad)
         meta = data.get("meta") or {}
         try:
             total = int(meta.get("count", len(items)))

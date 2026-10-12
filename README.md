@@ -245,6 +245,7 @@ Typed and closed. A diagnostic is never prose the client has to parse.
 | --- | --- | --- |
 | `OK` | info | Records returned; nothing to flag. |
 | `ZERO_RESULTS` | warning | No records for this term and filter set. Non-English titles are indexed as the publisher supplied them, so an English rendering of a Japanese or Korean title may not match. |
+| `RECORD_UNREADABLE` | warning | One or more records on the page had fields of the wrong type and could not be read. They are left out and named by position and identifier; the other records are complete. A malformed record is not an absent one. |
 | `NOT_FOUND` | warning | A lookup by identifier answered 404. |
 | `RATE_LIMITED` | error | OpenAlex answered 429. Since 2026 OpenAlex meters keyless access by a per-IP daily budget as well as per-second rate; a key raises both. |
 | `API_ERROR` | error | The API answered, and answered with an error (or with a 200 that was not JSON). |
