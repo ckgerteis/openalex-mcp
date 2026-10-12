@@ -23,8 +23,10 @@ import re
 import sys
 from typing import Any, Dict, Optional
 
+from urllib.parse import quote, quote_plus
+
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 try:  # mcp SDK 1.x
     from mcp.server.fastmcp import FastMCP as _MCPServer
 except ModuleNotFoundError:  # mcp SDK 2.x removed mcp.server.fastmcp
@@ -95,9 +97,15 @@ except TypeError:  # mcp SDK 1.x
 
 
 def _redact(text: str) -> str:
-    """Strip the key from any text that might reach a diagnostic."""
-    if API_KEY and API_KEY in text:
-        text = text.replace(API_KEY, "[redacted]")
+    """Strip the key and the contact email from any text that might reach a
+    diagnostic, in every form a URL gives them: an upstream error that echoes
+    the request URL carries them percent-encoded, which the raw match missed.
+    Call before truncating, never after: a cut through the middle of a secret
+    leaves a prefix no match can find."""
+    for secret in (API_KEY, EMAIL):
+        if secret:
+            for form in {secret, quote(secret, safe=""), quote_plus(secret), quote(secret)}:
+                text = text.replace(form, "[redacted]")
     return text
 
 
@@ -120,7 +128,9 @@ async def _oa_request(
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False) as client:
             resp = await client.get(url, params=sent)
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
+        # InvalidURL is not an HTTPError: a request too long or malformed to
+        # send raised it out of the tool. The request was not sent.
         return None, M.diag(
             "error", "TRANSPORT_ERROR",
             f"Could not reach OpenAlex: {_redact(type(exc).__name__ + ': ' + str(exc))[:300]}",
@@ -144,7 +154,7 @@ async def _oa_request(
     if resp.status_code >= 400:
         return None, M.diag(
             "error", "API_ERROR",
-            f"OpenAlex answered {resp.status_code}: {_redact(resp.text[:300])}",
+            f"OpenAlex answered {resp.status_code}: {_redact(resp.text)[:300]}",
             None,
         )
     try:
@@ -331,6 +341,23 @@ def _item_from_institution(i: dict, matched_in: str) -> dict:
 # ==============================================================================
 
 
+def _not_shape(expected: str, data: Any) -> dict:
+    said = ""
+    if isinstance(data, dict):
+        msg = data.get("error") or data.get("message")
+        if msg:
+            said = f' It said: "{_redact(str(msg))[:200]}".'
+        shape = f"an object with keys {sorted(map(str, data))[:6]}"
+    else:
+        shape = "null" if data is None else f"a {type(data).__name__}"
+    return M.diag(
+        "error", "API_ERROR",
+        f"OpenAlex answered 200, but with {shape} rather than {expected}.{said}",
+        "The result of this search is unknown, not empty. Retry before "
+        "concluding anything about the literature.",
+    )
+
+
 def _envelope(
     *,
     operation: str,
@@ -354,14 +381,23 @@ def _envelope(
     total = 0
     start = 1
     ds: list[dict] = []
+    # A 200 body that is not the shape asked for (null, an error object, a
+    # page without results) is an answer that did not arrive. Reported as
+    # ZERO_RESULTS, or as an empty record marked OK, it read as an absence in
+    # the literature.
     if err:
         ds.append(err)
     elif single:
-        if isinstance(data, dict):
+        if isinstance(data, dict) and isinstance(data.get("id"), str):
             items = [build(data, matched_in)]
             total = 1
-    elif isinstance(data, dict):
-        results = data.get("results") or []
+        else:
+            ds.append(_not_shape("a record", data))
+    elif not (isinstance(data, dict) and isinstance(data.get("results"), list)
+              and isinstance(data.get("meta"), dict)):
+        ds.append(_not_shape("a results page", data))
+    else:
+        results = data["results"]
         items = [build(r, matched_in) for r in results if isinstance(r, dict)]
         meta = data.get("meta") or {}
         try:
@@ -372,7 +408,7 @@ def _envelope(
         page = int(meta.get("page") or params.get("page") or 1)
         start = (page - 1) * per_page + 1
 
-    if not err and not items:
+    if not ds and not items:
         ds.append(M.diag(
             "warning", "ZERO_RESULTS",
             "No records. OpenAlex matched nothing for this term and filter set.",
@@ -412,12 +448,37 @@ def _as_work_id(work_id: str) -> str:
 # Input Models
 # ==============================================================================
 
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+QUERY_MAX = 2000  # far above any real search; well below httpx's URL limit
+
+
+def _filter_value(v: Optional[str]) -> Optional[str]:
+    """A value that goes into `filter=`. The syntax has no escape, and a comma
+    starts a new filter: author_id="A1,is_oa:true" used to narrow the search
+    by a filter nobody asked for, and the envelope reported it as plain. '|'
+    stays allowed: it ORs values within the one filter."""
+    if v is not None and ("," in v or _CONTROL.search(v)):
+        raise ValueError("must not contain a comma or a control character "
+                         "(a comma would start a filter of its own)")
+    return v
+
+
+def _path_id(v: str) -> str:
+    """An identifier that becomes a path segment. '.' and '..' segments walked
+    to another endpoint (work_id="../authors/A5" fetched an author as a work);
+    reserved characters are percent-encoded where the request is built."""
+    if _CONTROL.search(v) or any(seg in (".", "..") for seg in v.split("/")):
+        raise ValueError("must be an identifier, not a path: no '.' or '..' "
+                         "segments and no control characters")
+    return v
+
+
 
 class WorkSearchInput(BaseModel):
     """Search OpenAlex for scholarly works."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
-    query: str = Field(..., description="Search query (searches title, abstract, fulltext)", min_length=1)
+    query: str = Field(..., description="Search query (searches title, abstract, fulltext)", min_length=1, max_length=QUERY_MAX)
     year_from: Optional[int] = Field(default=None, description="Start year filter")
     year_to: Optional[int] = Field(default=None, description="End year filter")
     author_id: Optional[str] = Field(default=None, description="OpenAlex author ID filter (e.g., 'A1234567890')")
@@ -427,6 +488,8 @@ class WorkSearchInput(BaseModel):
     sort_by: Optional[str] = Field(default=None, description="Sort: 'cited_by_count', 'publication_date', 'relevance_score'")
     per_page: int = Field(default=10, description="Results per page (1-200)", ge=1, le=200)
     page: int = Field(default=1, description="Page number", ge=1)
+
+    _filters = field_validator("author_id", "institution_id", "source_id", "sort_by")(_filter_value)
 
 
 class WorkLookupInput(BaseModel):
@@ -439,15 +502,19 @@ class WorkLookupInput(BaseModel):
         min_length=1,
     )
 
+    _path = field_validator("work_id")(_path_id)
+
 
 class AuthorSearchInput(BaseModel):
     """Search OpenAlex for authors."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
-    query: str = Field(..., description="Author name to search", min_length=1)
+    query: str = Field(..., description="Author name to search", min_length=1, max_length=QUERY_MAX)
     institution_id: Optional[str] = Field(default=None, description="Filter by institution OpenAlex ID")
     per_page: int = Field(default=10, ge=1, le=200)
     page: int = Field(default=1, ge=1)
+
+    _filters = field_validator("institution_id")(_filter_value)
 
 
 class AuthorLookupInput(BaseModel):
@@ -456,25 +523,31 @@ class AuthorLookupInput(BaseModel):
 
     author_id: str = Field(..., description="OpenAlex author ID (e.g., 'A1234567890') or ORCID", min_length=1)
 
+    _path = field_validator("author_id")(_path_id)
+
 
 class SourceSearchInput(BaseModel):
     """Search OpenAlex for sources (journals, repositories, conferences)."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
-    query: str = Field(..., description="Source name to search", min_length=1)
+    query: str = Field(..., description="Source name to search", min_length=1, max_length=QUERY_MAX)
     type: Optional[str] = Field(default=None, description="Filter by type: 'journal', 'repository', 'conference'")
     per_page: int = Field(default=10, ge=1, le=200)
     page: int = Field(default=1, ge=1)
+
+    _filters = field_validator("type")(_filter_value)
 
 
 class InstitutionSearchInput(BaseModel):
     """Search OpenAlex for institutions."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
-    query: str = Field(..., description="Institution name to search", min_length=1)
+    query: str = Field(..., description="Institution name to search", min_length=1, max_length=QUERY_MAX)
     country_code: Optional[str] = Field(default=None, description="ISO country code filter (e.g., 'JP', 'GB', 'US')")
     per_page: int = Field(default=10, ge=1, le=200)
     page: int = Field(default=1, ge=1)
+
+    _filters = field_validator("country_code")(_filter_value)
 
 
 class CitedByInput(BaseModel):
@@ -484,6 +557,8 @@ class CitedByInput(BaseModel):
     work_id: str = Field(..., description="OpenAlex work ID or DOI", min_length=1)
     per_page: int = Field(default=20, ge=1, le=200)
     page: int = Field(default=1, ge=1)
+
+    _filters = field_validator("work_id")(_filter_value)
 
 
 class AuthorWorksInput(BaseModel):
@@ -496,6 +571,8 @@ class AuthorWorksInput(BaseModel):
     sort_by: Optional[str] = Field(default=None, description="Sort: 'cited_by_count', 'publication_date'")
     per_page: int = Field(default=20, ge=1, le=200)
     page: int = Field(default=1, ge=1)
+
+    _filters = field_validator("author_id", "sort_by")(_filter_value)
 
 
 # ==============================================================================
@@ -537,7 +614,7 @@ async def oa_search_works(params: WorkSearchInput) -> str:
 @mcp.tool(name="oa_get_work", annotations=_ANN)
 async def oa_get_work(params: WorkLookupInput) -> str:
     """Look up one work by OpenAlex ID, DOI, or PMID. Returns the unified envelope with a single item, or NOT_FOUND."""
-    data, err = await _oa_request(f"works/{_as_work_id(params.work_id)}")
+    data, err = await _oa_request(f"works/{quote(_as_work_id(params.work_id), safe=':/')}")
     return _envelope(operation="get_work", term=params.work_id, params={"work_id": params.work_id},
                      matching_mode=MODE_LOOKUP, data=data, err=err,
                      build=_item_from_work, matched_in="identifier", single=True)
@@ -558,7 +635,7 @@ async def oa_search_authors(params: AuthorSearchInput) -> str:
 @mcp.tool(name="oa_get_author", annotations=_ANN)
 async def oa_get_author(params: AuthorLookupInput) -> str:
     """Look up one author by OpenAlex ID or ORCID. Returns the unified envelope with a single author item, or NOT_FOUND."""
-    data, err = await _oa_request(f"authors/{params.author_id}")
+    data, err = await _oa_request(f"authors/{quote(params.author_id, safe=':/')}")
     return _envelope(operation="get_author", term=params.author_id, params={"author_id": params.author_id},
                      matching_mode=MODE_LOOKUP, data=data, err=err,
                      build=_item_from_author, matched_in="identifier", single=True)
