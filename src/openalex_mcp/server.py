@@ -1,5 +1,5 @@
 """
-OpenAlex MCP Server (v2.1.2)
+OpenAlex MCP Server (v2.3.0)
 ============================
 An MCP server for the OpenAlex API — the open scholarly graph maintained by
 OurResearch, covering works, authors, sources (journals), and institutions.
@@ -34,7 +34,7 @@ except ModuleNotFoundError:  # mcp SDK 2.x removed mcp.server.fastmcp
 
 from . import mediation as M
 
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 
 # ==============================================================================
 # Configuration
@@ -56,6 +56,19 @@ MODE_FILTER = "filter_exact"
 MODE_LOOKUP = "identifier_lookup"
 
 _SECRET_PARAMS = ("api_key", "mailto")
+
+# OpenAlex prices a request by the call, not by the results it returns: a
+# keyword search costs 10 credits ($0.001) at per-page 10 and at per-page 200
+# alike (checked live, 1 Nov 2026), so a sweep paging at 10 pays twenty times
+# what it would at 200. The defaults stay small because every result is also
+# text the client has to read; a sweep should ask for the maximum, and the
+# envelope says so when a search pages on at a small page size.
+PER_PAGE_MAX = 200
+PER_PAGE_DESC = (
+    "Results per page (1-200). OpenAlex charges per call, not per result, so a "
+    "sweep that will page through results should set 200."
+)
+SWEEP_PAGE_SIZE_BELOW = 50
 
 
 def _silence_http_logging() -> None:
@@ -109,6 +122,79 @@ def _redact(text: str) -> str:
     return text
 
 
+def _header_number(headers, name: str) -> Optional[float]:
+    try:
+        return float(headers.get(name))
+    except (TypeError, ValueError):
+        return None
+
+
+def _upstream_message(body: str) -> str:
+    try:
+        import json as _json
+        msg = _json.loads(body).get("message")
+    except Exception:  # noqa: BLE001
+        msg = None
+    return _redact(str(msg))[:240] if msg else ""
+
+
+def _rate_limit_diag(headers, body: str = "") -> dict:
+    """Say which allowance a 429 exhausted.
+
+    OpenAlex meters two things: requests per second, and a daily dollar budget
+    ($1 on a key, $0.10 shared per IP without one) that resets at midnight UTC,
+    topped up by any prepaid balance. Each response carries the budget in
+    X-RateLimit-* headers. Until 1 Nov 2026 every 429 was reported as a rate
+    problem with advice to add a key, even when the key was set and the day's
+    budget was gone. The code stays RATE_LIMITED, so nothing that branches on
+    it changes; the message says which limit it was.
+    """
+    remaining = _header_number(headers, "X-RateLimit-Remaining-USD")
+    prepaid = _header_number(headers, "X-RateLimit-Prepaid-Remaining-USD")
+    required = _header_number(headers, "X-RateLimit-Cost-Required-USD")
+    reset = _header_number(headers, "X-RateLimit-Reset")
+    unknown = "The result of this search is unknown, not empty."
+
+    if remaining is None:
+        # Seen live 1 Nov 2026: under load OpenAlex throttles keyless search with
+        # a 429 that carries only Retry-After and a message saying so.
+        said = _upstream_message(body)
+        retry = _header_number(headers, "Retry-After")
+        hint = f"{unknown} " + (f"OpenAlex asks for a retry in {int(retry)} s." if retry is not None
+                                else "Wait and retry.")
+        if not API_KEY:
+            hint += " A free key (OPENALEX_API_KEY) raises both allowances."
+        return M.diag(
+            "error", "RATE_LIMITED",
+            "OpenAlex answered 429 without its budget headers"
+            + (f': "{said}"' if said else ", so it is not known which limit was exceeded."),
+            hint,
+        )
+
+    left = remaining + (prepaid or 0.0)
+    if left <= 0 or (required is not None and left < required):
+        budget = ("the $1 daily budget on this API key" if API_KEY else
+                  "the keyless $0.10 daily budget, shared by everyone on this network address")
+        msg = f"OpenAlex answered 429: {budget} is spent, and no prepaid balance covers this request"
+        msg += f" (it needed ${required:.4f})." if required is not None else "."
+        if reset is not None and reset >= 0:
+            secs = int(reset)
+            msg += f" The budget resets at midnight UTC, in about {secs // 3600} h {secs % 3600 // 60} min."
+        else:
+            msg += " The budget resets at midnight UTC."
+        hint = f"{unknown} Wait for the reset, or add prepaid usage at https://openalex.org/pricing."
+        if not API_KEY:
+            hint += " A free key (OPENALEX_API_KEY) has a $1 daily budget of its own."
+        return M.diag("error", "RATE_LIMITED", msg, hint)
+
+    msg = (f"OpenAlex answered 429: too many requests per second. The daily budget "
+           f"is not the cause (${left:.4f} left).")
+    hint = f"{unknown} Wait a few seconds and retry."
+    if not API_KEY:
+        hint += " A free key (OPENALEX_API_KEY) raises the per-second allowance from 10 to 30."
+    return M.diag("error", "RATE_LIMITED", msg, hint)
+
+
 async def _oa_request(
     endpoint: str, params: Optional[Dict[str, Any]] = None
 ) -> tuple[Optional[Any], Optional[dict]]:
@@ -146,11 +232,7 @@ async def _oa_request(
             "ORCID, or a PMID.",
         )
     if resp.status_code == 429:
-        return None, M.diag(
-            "error", "RATE_LIMITED",
-            "OpenAlex answered 429: the request rate was exceeded.",
-            "Wait and retry. An API key raises the daily and per-second allowance.",
-        )
+        return None, _rate_limit_diag(resp.headers, resp.text)
     if resp.status_code >= 400:
         return None, M.diag(
             "error", "API_ERROR",
@@ -412,6 +494,7 @@ def _envelope(
     total = 0
     start = 1
     ds: list[dict] = []
+    paging_cost: Optional[tuple[int, int]] = None
     # A 200 body that is not the shape asked for (null, an error object, a
     # page without results) is an answer that did not arrive. Reported as
     # ZERO_RESULTS, or as an empty record marked OK, it read as an absence in
@@ -441,6 +524,8 @@ def _envelope(
         per_page = _count(meta.get("per_page")) or _count(params.get("per-page")) or len(items) or 1
         page = _count(meta.get("page")) or _count(params.get("page")) or 1
         start = (page - 1) * per_page + 1
+        if page > 1 and per_page < SWEEP_PAGE_SIZE_BELOW:
+            paging_cost = (page, per_page)
 
     if not ds and not items:
         ds.append(M.diag(
@@ -452,6 +537,16 @@ def _envelope(
         ))
     if not ds:
         ds.append(M.diag("info", "OK", f"{total} record(s) reported by OpenAlex.", None))
+    if paging_cost:
+        # Appended after OK and ZERO_RESULTS are decided, so it never displaces them.
+        page, per_page = paging_cost
+        ds.append(M.diag(
+            "info", "PAGING_COST",
+            f"This is page {page} at {per_page} results per page. OpenAlex charges "
+            "per call, not per result, so each page costs as much as a page of 200.",
+            "To continue a sweep, set per_page to 200 and start from the first "
+            "result not yet seen.",
+        ))
 
     clean = {k: v for k, v in params.items() if k not in _SECRET_PARAMS and v is not None}
     env = M.build_envelope(
@@ -536,7 +631,7 @@ class WorkSearchInput(BaseModel):
     source_id: Optional[str] = Field(default=None, description="OpenAlex source/journal ID filter")
     open_access: Optional[bool] = Field(default=None, description="Filter for open access works only")
     sort_by: Optional[str] = Field(default=None, description="Sort: 'cited_by_count', 'publication_date', 'relevance_score'")
-    per_page: int = Field(default=10, description="Results per page (1-200)", ge=1, le=200)
+    per_page: int = Field(default=10, description=PER_PAGE_DESC, ge=1, le=PER_PAGE_MAX)
     page: int = Field(default=1, description="Page number", ge=1)
 
     _filters = field_validator("author_id", "institution_id", "source_id", "sort_by")(_filter_value)
@@ -561,7 +656,7 @@ class AuthorSearchInput(BaseModel):
 
     query: str = Field(..., description="Author name to search", min_length=1, max_length=QUERY_MAX)
     institution_id: Optional[str] = Field(default=None, description="Filter by institution OpenAlex ID")
-    per_page: int = Field(default=10, ge=1, le=200)
+    per_page: int = Field(default=10, description=PER_PAGE_DESC, ge=1, le=PER_PAGE_MAX)
     page: int = Field(default=1, ge=1)
 
     _filters = field_validator("institution_id")(_filter_value)
@@ -582,7 +677,7 @@ class SourceSearchInput(BaseModel):
 
     query: str = Field(..., description="Source name to search", min_length=1, max_length=QUERY_MAX)
     type: Optional[str] = Field(default=None, description="Filter by type: 'journal', 'repository', 'conference'")
-    per_page: int = Field(default=10, ge=1, le=200)
+    per_page: int = Field(default=10, description=PER_PAGE_DESC, ge=1, le=PER_PAGE_MAX)
     page: int = Field(default=1, ge=1)
 
     _filters = field_validator("type")(_filter_value)
@@ -594,7 +689,7 @@ class InstitutionSearchInput(BaseModel):
 
     query: str = Field(..., description="Institution name to search", min_length=1, max_length=QUERY_MAX)
     country_code: Optional[str] = Field(default=None, description="ISO country code filter (e.g., 'JP', 'GB', 'US')")
-    per_page: int = Field(default=10, ge=1, le=200)
+    per_page: int = Field(default=10, description=PER_PAGE_DESC, ge=1, le=PER_PAGE_MAX)
     page: int = Field(default=1, ge=1)
 
     _filters = field_validator("country_code")(_filter_value)
@@ -605,7 +700,7 @@ class CitedByInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     work_id: str = Field(..., description="OpenAlex work ID or DOI", min_length=1)
-    per_page: int = Field(default=20, ge=1, le=200)
+    per_page: int = Field(default=20, description=PER_PAGE_DESC, ge=1, le=PER_PAGE_MAX)
     page: int = Field(default=1, ge=1)
 
     _filters = field_validator("work_id")(_filter_value)
@@ -619,7 +714,7 @@ class AuthorWorksInput(BaseModel):
     year_from: Optional[int] = Field(default=None, description="Start year filter")
     year_to: Optional[int] = Field(default=None, description="End year filter")
     sort_by: Optional[str] = Field(default=None, description="Sort: 'cited_by_count', 'publication_date'")
-    per_page: int = Field(default=20, ge=1, le=200)
+    per_page: int = Field(default=20, description=PER_PAGE_DESC, ge=1, le=PER_PAGE_MAX)
     page: int = Field(default=1, ge=1)
 
     _filters = field_validator("author_id", "sort_by")(_filter_value)
@@ -641,7 +736,8 @@ async def oa_search_works(params: WorkSearchInput) -> str:
     breadth is expected. Titles are typed by OpenAlex's own language field;
     where that is absent, a CJK title is kept only in extra.title rather than
     guessed into ja or ko. Filters by year, author, institution, source and
-    open-access status narrow the set exactly.
+    open-access status narrow the set exactly. OpenAlex charges per call, not
+    per result: a sweep that pages through results should set per_page 200.
     """
     qp: Dict[str, Any] = {"search": params.query, "per-page": params.per_page, "page": params.page}
     filters = [f for f in (

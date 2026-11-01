@@ -7,6 +7,24 @@ the text and, where a version DOI exists, cited by it.
 Releases earlier than those below are on the repository's releases page; this
 file begins where the record is precise enough to be worth writing down.
 
+## 2.3.0 — 2026-11-01
+
+- **A 429 says which allowance ran out.** OpenAlex now meters use in dollars
+  per day as well as per second. Every 429 was reported as "the request rate
+  was exceeded", with advice to add a key, even when a key was set and the
+  day's budget was spent. The message now reads OpenAlex's `X-RateLimit-*`
+  headers: a spent daily budget (with the time to the midnight-UTC reset and
+  the prepaid route), a per-second limit (with the budget left), or, when
+  OpenAlex sends no budget headers (it throttles keyless search under load),
+  OpenAlex's own message and `Retry-After`. Advice to add a key appears only
+  when none is set. The code stays `RATE_LIMITED`. Header shapes were checked
+  against real 429s captured on 1 November 2026.
+- **`PAGING_COST` (info).** OpenAlex charges a search the same at 10 results
+  per page as at 200, so a sweep paging at 10 pays twenty times over. Reading
+  beyond page 1 at fewer than 50 per page now says so, after `OK` or
+  `ZERO_RESULTS`; every `per_page` description says the same. Defaults (10, 20)
+  and the cap (200) are unchanged.
+
 ## 2.2.0 — 2026-10-12
 
 **Maintenance release from the stress test of 12 October 2026.** No tool was

@@ -247,7 +247,8 @@ Typed and closed. A diagnostic is never prose the client has to parse.
 | `ZERO_RESULTS` | warning | No records for this term and filter set. Non-English titles are indexed as the publisher supplied them, so an English rendering of a Japanese or Korean title may not match. |
 | `RECORD_UNREADABLE` | warning | One or more records on the page had fields of the wrong type and could not be read. They are left out and named by position and identifier; the other records are complete. A malformed record is not an absent one. |
 | `NOT_FOUND` | warning | A lookup by identifier answered 404. |
-| `RATE_LIMITED` | error | OpenAlex answered 429. Since 2026 OpenAlex meters keyless access by a per-IP daily budget as well as per-second rate; a key raises both. |
+| `RATE_LIMITED` | error | OpenAlex answered 429. OpenAlex meters a per-second rate and a daily dollar budget ($1 on a key, $0.10 per IP without one, reset at midnight UTC, topped up by any prepaid balance). The message says which was exceeded, read from OpenAlex's `X-RateLimit-*` headers: a spent budget names the time to reset and points to prepaid usage; a per-second limit gives the budget left; a 429 without those headers (OpenAlex throttling keyless search under load) quotes OpenAlex's message and its `Retry-After`. |
+| `PAGING_COST` | info | A search or list was read beyond page 1 at fewer than 50 results per page. OpenAlex charges per call, not per result, so a sweep should set `per_page` 200. Appended after `OK` or `ZERO_RESULTS`, never in place of them. |
 | `API_ERROR` | error | The API answered, and answered with an error (or with a 200 that was not JSON). |
 | `TRANSPORT_ERROR` | error | The request did not complete. Kept distinct from `API_ERROR` because a failed search has an unknown result and must never be written up as an absence. |
 | `RECEIPT_NOT_DEPOSITED` | info | The response was not written to the query ledger, because no receipts destination is configured. |
